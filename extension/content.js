@@ -189,18 +189,7 @@ function extractHtmlFeatures(currentDomain) {
  */
 async function analyzeUrl(url, htmlFeatures) {
   try {
-    // resolveApiBase() is defined in config.js and reads the user's
-    // saved preference, falling back to the mode set in config.js.
-    const apiBase = await resolveApiBase();
-
-    const response = await fetch(`${apiBase}/analyze`, {
-      method:  'POST',
-      headers: {'Content-Type': 'application/json'},
-      body:    JSON.stringify({url, html_features: htmlFeatures}),
-    });
-
-    if (!response.ok) return null;
-    return await response.json();
+    return await analyzeWithFallback(url, htmlFeatures);
 
   } catch {
     return null; // Network error or server offline — fail silently

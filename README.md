@@ -17,9 +17,12 @@ uvicorn main:app --reload
 Open `extension/config.js` and set your mode:
 
 ```js
-// Switch to 'local' if you're running the backend on your own machine
+// Keep both cloud URLs (priority order). The extension auto-falls back.
 const SAFECLICK_MODE = Mode.CLOUD;
-const CLOUD_API_URL  = 'https://your-app.onrender.com';
+const CLOUD_API_URLS = [
+    'https://your-railway-url.up.railway.app',
+    'https://your-render-url.onrender.com',
+];
 ```
 
 ### 3. Load the extension in Chrome
