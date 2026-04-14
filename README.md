@@ -38,15 +38,19 @@ const CLOUD_API_URL  = 'https://your-app.onrender.com';
 
 ## Deploying to the cloud (Render)
 
-1. Push the `backend/` folder to a GitHub repository
+1. Push this project to a GitHub repository
 2. Create a new **Web Service** on [render.com](https://render.com)
-3. Set start command: `uvicorn main:app --host 0.0.0.0 --port 10000`
-4. Copy the generated URL into `config.js` → `CLOUD_API_URL`
+3. Set **Root Directory** to `backend`
+4. Set build command: `pip install -r requirements.txt`
+5. Set start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+6. (Recommended) Set environment variable: `PYTHON_VERSION=3.11.11`
+7. Copy the generated URL into `extension/config.js` → `CLOUD_API_URL`
 
 ## Project structure
 
 ```
 SafeClick/
+├── .python-version     ← Python runtime pin for Render/local consistency
 ├── extension/
 │   ├── config.js          ← ✏️  Edit this to switch modes or set your cloud URL
 │   ├── manifest.json      ← Extension metadata and permissions
@@ -57,7 +61,7 @@ SafeClick/
 │   ├── popup.css          ← Popup styles
 │   └── icons/             ← Extension icons
 └── backend/
-    ├── config.js          ← ✏️  Only file to edit for connection settings
+    ├── .python-version    ← Python runtime pin (fallback when deploying from backend root)
     ├── main.py            ← FastAPI server — /analyze and /health endpoints
     ├── feature_extractor.py ← URL + HTML phishing feature extraction
     ├── model_trainer.py   ← ML model training script

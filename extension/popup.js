@@ -469,40 +469,104 @@ function resetScanUI() {
 }
 
 /**
- * Fetches the active tab URL, calls the API, and updates the full UI.
- * Uses config.js getApiUrl() directly (not resolveApiBase) since popup
- * calls the API itself rather than relying on stored results.
+ * Returns whether a URL is scannable by the extension.
+ *
+ * @param {string} url Candidate URL.
+ * @return {boolean} True for http(s) URLs.
+ */
+function isScannableUrl(url) {
+  return url.startsWith('http://') || url.startsWith('https://');
+}
+
+/**
+ * Shows a clear state for tabs that cannot be scanned.
+ *
+ * @param {string} message Additional guidance text.
+ */
+function showUnsupportedTabState(message) {
+  el.heroHeadline.textContent = 'Unsupported Tab';
+  el.heroSub.textContent      = message;
+}
+
+/**
+ * Applies one completed scan result to the dashboard UI and counters.
+ *
+ * @param {Object} result API response payload.
+ * @param {string} scannedUrl URL that was scanned.
+ */
+function applyScanResult(result, scannedUrl) {
+  const {risk_level: level, risk_score: score, features, reasons} = result;
+
+  setHeroState(level);
+  animateGauge(score ?? 0, level);
+  renderMetadata(features, scannedUrl);
+  renderReasons(reasons);
+
+  if (level === 'dangerous') renderSuggestion(scannedUrl);
+
+  checkTrending(scannedUrl);
+  setupReportButton(scannedUrl, level);
+  saveHistory(scannedUrl, level, score ?? 0);
+  updateStats(level);
+}
+
+/**
+ * Requests a fresh scan from the content script running in the active tab.
+ *
+ * @param {number} tabId Active tab ID.
+ * @return {Promise<?Object>} API result object, or null if content script is unavailable.
+ */
+async function requestContentRescan(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, {type: 'scan_now'});
+    if (!response?.ok || !response.result) return null;
+    return response.result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fallback scan path when content scripts are unavailable.
+ * Sends URL-only payload directly to the API.
+ *
+ * @param {string} url URL to analyze.
+ * @return {Promise<Object>} API response payload.
+ */
+async function fetchUrlOnlyScan(url) {
+  const apiBase  = await resolveApiBase();
+  const response = await fetch(`${apiBase}/analyze`, {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({url}),
+  });
+
+  if (!response.ok) throw new Error('API returned non-OK status');
+  return await response.json();
+}
+
+/**
+ * Fetches the active tab URL, runs a scan, and updates the full UI.
+ * Prefers content-script rescans (URL + DOM signals), with URL-only fallback.
  */
 async function checkCurrentTab() {
   resetScanUI();
 
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
-  if (!tab?.url) return;
+  if (!tab?.url) {
+    showUnsupportedTabState('No active page found to scan.');
+    return;
+  }
+
+  if (!isScannableUrl(tab.url)) {
+    showUnsupportedTabState('Open any website that starts with http:// or https://');
+    return;
+  }
 
   try {
-    const apiBase  = getApiUrl(); // from config.js
-    const response = await fetch(`${apiBase}/analyze`, {
-      method:  'POST',
-      headers: {'Content-Type': 'application/json'},
-      body:    JSON.stringify({url: tab.url}),
-    });
-
-    if (!response.ok) throw new Error('API returned non-OK status');
-
-    const result = await response.json();
-    const {risk_level: level, risk_score: score, features, reasons} = result;
-
-    setHeroState(level);
-    animateGauge(score ?? 0, level);
-    renderMetadata(features, tab.url);
-    renderReasons(reasons);
-
-    if (level === 'dangerous') renderSuggestion(tab.url);
-
-    checkTrending(tab.url);
-    setupReportButton(tab.url, level);
-    saveHistory(tab.url, level, score ?? 0);
-    updateStats(level);
+    const contentResult = tab.id ? await requestContentRescan(tab.id) : null;
+    const result = contentResult ?? await fetchUrlOnlyScan(tab.url);
+    applyScanResult(result, tab.url);
 
   } catch {
     el.heroHeadline.textContent = 'Server Offline';

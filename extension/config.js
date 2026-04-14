@@ -37,7 +37,7 @@ const Mode = {
 const SAFECLICK_MODE = Mode.CLOUD;
 
 /** @type {string} Your deployed cloud backend URL (used when mode = 'cloud'). */
-const CLOUD_API_URL = 'https://your-app.onrender.com'; // <-- replace with your URL
+const CLOUD_API_URL = 'https://safeclick-f8yg.onrender.com';
 
 // ─── DO NOT EDIT BELOW THIS LINE ─────────────────────────────────────────────
 
@@ -67,7 +67,8 @@ function getApiUrl() {
 async function resolveApiBase() {
   return new Promise((resolve) => {
     chrome.storage.sync.get({api_base: getApiUrl()}, (items) => {
-      resolve(items.api_base.replace(/\/$/, ''));
+      const base = typeof items.api_base === 'string' ? items.api_base : getApiUrl();
+      resolve(base.replace(/\/$/, ''));
     });
   });
 }

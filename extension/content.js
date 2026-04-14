@@ -38,6 +38,16 @@ const BANNER_CONFIG = {
   },
 };
 
+/**
+ * Returns whether the URL can be scanned by the extension.
+ *
+ * @param {string} url Current page URL.
+ * @return {boolean} True for http(s) URLs.
+ */
+function isScannableUrl(url) {
+  return url.startsWith('http://') || url.startsWith('https://');
+}
+
 // ─── HTML feature extraction ──────────────────────────────────────────────────
 
 /**
@@ -265,7 +275,7 @@ function showWarningBanner(result) {
           SafeClick
         </div>
       </div>
-      <button onclick="document.getElementById('${ALERT_ID}').remove()"
+      <button id="sc-close-btn"
         style="background:#1e2022;border:none;color:#c4c6d0;width:28px;height:28px;
                border-radius:6px;cursor:pointer;font-size:14px;
                display:flex;align-items:center;justify-content:center">
@@ -280,14 +290,14 @@ function showWarningBanner(result) {
     ${reasonsList}
 
     <div style="display:flex;gap:8px">
-      <button onclick="window.history.back()"
+      <button id="sc-back-btn"
         style="flex:1;padding:8px;
                background:linear-gradient(135deg,#b2c5ff,#002769);
                color:#e2e2e5;border:none;border-radius:7px;cursor:pointer;
                font-size:12px;font-weight:700;font-family:'Inter',sans-serif">
         ← Go Back
       </button>
-      <button onclick="document.getElementById('${ALERT_ID}').remove()"
+      <button id="sc-dismiss-btn"
         style="flex:1;padding:8px;background:#1e2022;color:#c4c6d0;
                border:none;border-radius:7px;cursor:pointer;font-size:12px;
                font-family:'Inter',sans-serif">
@@ -297,19 +307,23 @@ function showWarningBanner(result) {
   `;
 
   document.body.appendChild(banner);
+
+  const removeBanner = () => document.getElementById(ALERT_ID)?.remove();
+  banner.querySelector('#sc-close-btn')?.addEventListener('click', removeBanner);
+  banner.querySelector('#sc-dismiss-btn')?.addEventListener('click', removeBanner);
+  banner.querySelector('#sc-back-btn')?.addEventListener('click', () => window.history.back());
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 /**
- * Main execution function. Runs once when the page finishes loading.
- * Skips internal Chrome pages that cannot be scanned.
+ * Scans the current page and updates storage, badge, and warning banner.
+ *
+ * @return {Promise<?Object>} API response object, or null on failure.
  */
-async function run() {
+async function scanCurrentPage() {
   const url = window.location.href;
-
-  // Skip Chrome internal pages — they cannot be analyzed
-  if (url.startsWith('chrome://') || url.startsWith('chrome-extension://')) return;
+  if (!isScannableUrl(url)) return null;
 
   // Normalize current domain (remove www. prefix for consistent comparison)
   const currentDomain = location.hostname.replace(/^www\./, '');
@@ -319,7 +333,7 @@ async function run() {
 
   // Step 2: Send URL + HTML signals to the API
   const result = await analyzeUrl(url, htmlFeatures);
-  if (!result) return; // API unreachable — fail silently
+  if (!result) return null; // API unreachable — fail silently
 
   // Step 3: Persist result for the popup and notify the background worker
   chrome.storage.local.set({last_result: result});
@@ -327,6 +341,18 @@ async function run() {
 
   // Step 4: Show a warning banner if the site is suspicious or dangerous
   showWarningBanner(result);
+
+  return result;
 }
 
-run();
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== 'scan_now') return undefined;
+
+  scanCurrentPage()
+      .then((result) => sendResponse({ok: Boolean(result), result}))
+      .catch((error) => sendResponse({ok: false, error: String(error)}));
+
+  return true;
+});
+
+scanCurrentPage();

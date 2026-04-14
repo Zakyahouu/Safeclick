@@ -24,38 +24,48 @@ from pydantic import BaseModel, field_validator
 from feature_extractor import (
     extract,
     to_vector,
-    has_iframe_redirection,
-    sfh_score,
-    external_resources_ratio,
 )
 
 # ─── App setup ────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="SafeClick API",
-    description="AI-powered phishing URL detection — returns risk level, score, and reasons.",
+    description=(
+        "AI-powered phishing URL detection — returns risk level, "
+        "risk score, and human-readable reasons."
+    ),
     version="1.1.0",
 )
+
+raw_origins = os.getenv("SAFECLICK_CORS_ORIGINS", "*").strip()
+allow_origins = ["*"] if raw_origins == "*" else [
+    origin.strip() for origin in raw_origins.split(",") if origin.strip()
+]
 
 # Allow requests from any origin so the Chrome extension can reach this server.
 # In production you may restrict this to your extension's origin.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allow_origins,
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
 
 # ─── ML model loading ─────────────────────────────────────────────────────────
 
-MODEL_PATH = "phishing_model.pkl"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "phishing_model.pkl")
 model = None
 
 if os.path.exists(MODEL_PATH):
-    model = joblib.load(MODEL_PATH)
-    print(f"✅  Model loaded from {MODEL_PATH}")
+    try:
+        model = joblib.load(MODEL_PATH)
+        print(f"✅  Model loaded from {MODEL_PATH}")
+    except Exception as exc:  # pragma: no cover
+        model = None
+        print(f"⚠️   Failed to load model ({exc}) — using rule-based detection only.")
 else:
-    print("⚠️   No model found — falling back to rule-based detection only.")
+    print(f"⚠️   No model found at {MODEL_PATH} — using rule-based detection only.")
 
 
 # ─── Request / response schemas ───────────────────────────────────────────────
@@ -212,7 +222,10 @@ def compute_rule_score(features: dict, html_features: HtmlFeatures | None = None
 # ─── Classification ───────────────────────────────────────────────────────────
 
 
-def classify(features: dict, html_features: HtmlFeatures | None = None) -> tuple[str, list[str], float]:
+def classify(
+    features: dict,
+    html_features: HtmlFeatures | None = None,
+) -> tuple[str, list[str], float, float | None, float, int]:
     """Combines ML model probability with rule-based score to classify a URL.
 
     When the model is available, the final score is a weighted blend:
@@ -230,26 +243,34 @@ def classify(features: dict, html_features: HtmlFeatures | None = None) -> tuple
         html_features: Optional DOM signals from the browser.
 
     Returns:
-        A tuple of (level, reasons, probability) where:
+        A tuple of (level, reasons, risk_score, ml_probability, final_score, rule_score)
+        where:
         - level is "safe", "suspicious", or "dangerous"
         - reasons is a list of human-readable explanation strings
-        - probability is the ML model's phishing probability (0.0–1.0)
+        - risk_score is the normalized final score (0.0–1.0)
+        - ml_probability is the model phishing probability (0.0–1.0) or None
+        - final_score is the blended score in 0–100 used for thresholds
+        - rule_score is the raw rule-based score in 0–100+
     """
     rule_score, reasons = compute_rule_score(features, html_features)
 
     if model:
-        vector      = to_vector(features)
-        probability = float(model.predict_proba([vector])[0][1])
-        final_score = (probability * 100 * 0.7) + (rule_score * 0.3)
+        vector         = to_vector(features)
+        ml_probability = float(model.predict_proba([vector])[0][1])
+        final_score    = (ml_probability * 100 * 0.7) + (rule_score * 0.3)
     else:
-        probability = min(rule_score / 100, 1.0)
-        final_score = float(rule_score)
+        ml_probability = None
+        final_score    = float(rule_score)
+
+    final_score = max(0.0, min(final_score, 100.0))
+    risk_score  = round(final_score / 100, 2)
+    ml_score    = round(ml_probability, 2) if ml_probability is not None else None
 
     if final_score >= 50:
-        return "dangerous",  reasons, round(probability, 2)
+        return "dangerous", reasons, risk_score, ml_score, round(final_score, 1), rule_score
     if final_score >= 25:
-        return "suspicious", reasons, round(probability, 2)
-    return "safe", [], round(probability, 2)
+        return "suspicious", reasons, risk_score, ml_score, round(final_score, 1), rule_score
+    return "safe", [], risk_score, ml_score, round(final_score, 1), rule_score
 
 
 # ─── API endpoints ────────────────────────────────────────────────────────────
@@ -267,15 +288,21 @@ def analyze(request: URLRequest):
 
     Returns:
         A JSON object with:
-        - url:        The analyzed URL.
-        - risk_level: "safe", "suspicious", or "dangerous".
-        - risk_score: ML probability (0.0–1.0).
-        - message:    Human-readable summary.
-        - reasons:    List of specific threat signals found.
-        - features:   Full URL feature dict (for debugging / popup display).
+        - url:            The analyzed URL.
+        - risk_level:     "safe", "suspicious", or "dangerous".
+        - risk_score:     Final normalized risk score (0.0–1.0).
+        - final_score:    Final blended score used for classification (0–100).
+        - ml_probability: Model phishing probability (0.0–1.0), or null if no model.
+        - rule_score:     Raw rule-based score before blending.
+        - message:        Human-readable summary.
+        - reasons:        List of specific threat signals found.
+        - features:       Full URL feature dict (for debugging / popup display).
     """
-    features              = extract(request.url)
-    level, reasons, score = classify(features, request.html_features)
+    features = extract(request.url)
+    level, reasons, risk_score, ml_probability, final_score, rule_score = classify(
+        features,
+        request.html_features,
+    )
 
     messages = {
         "safe":       "Site appears safe.",
@@ -284,12 +311,26 @@ def analyze(request: URLRequest):
     }
 
     return {
-        "url":        request.url,
-        "risk_level": level,
-        "risk_score": score,
-        "message":    messages[level],
-        "reasons":    reasons,
-        "features":   features,
+        "url":            request.url,
+        "risk_level":     level,
+        "risk_score":     risk_score,
+        "final_score":    final_score,
+        "ml_probability": ml_probability,
+        "rule_score":     rule_score,
+        "message":        messages[level],
+        "reasons":        reasons,
+        "features":       features,
+    }
+
+
+@app.get("/")
+def root():
+    """Returns a lightweight API status payload for browser root checks."""
+    return {
+        "name": "SafeClick API",
+        "status": "running",
+        "docs": "/docs",
+        "health": "/health",
     }
 
 
